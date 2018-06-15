@@ -11,12 +11,19 @@ import org.eclipse.microprofile.config.spi.ConfigSource;
 import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
+import javax.enterprise.event.Event;
+import javax.inject.Inject;
+import org.apache.curator.framework.recipes.cache.PathChildrenCache;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
+import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
 
 /**
  * MicroProfile Config Source that is backed by Zookeeper.
  * <p>
- * The Config Source itself needs configuration which is handled by other Config Sources.
- * Properties prefixed with io.streamzi.zk will be ignored by this Config Source.
+ * The Config Source itself needs configuration which is handled by other Config Sources. Properties prefixed with
+ * io.streamzi.zk will be ignored by this Config Source.
  * <p>
  * author: Simon Woodman <swoodman@redhat.com>
  */
@@ -41,7 +48,87 @@ public class ZkConfigSource implements ConfigSource {
 
     public final String ZK_CONFIG_NAME = "io.streamzi.zk.ZkConfigSource";
 
+    /**
+     * Reaises config change events
+     */
+    @Inject
+    private Event<ZkConfigChange> configChangeEvent;
+
+    /**
+     * Cache of child nodes for updates
+     */
+    private PathChildrenCache cache;
+
     public ZkConfigSource() {
+    }
+
+    @PostConstruct
+    public void init() {
+        logger.info("Starting ZkConfigSource");
+        CuratorFramework zk = getCuratorClient();
+
+        // Create a cache for the children of the application key
+        try {
+            final Stat stat = zk.checkExists().forPath(applicationId);
+
+            if (stat != null) {
+                cache = new PathChildrenCache(zk, applicationId, true);
+                cache.start();
+                cache.rebuild();
+                cache.getListenable().addListener(new PathChildrenCacheListener() {
+                    @Override
+                    public void childEvent(CuratorFramework client, PathChildrenCacheEvent event) throws Exception {
+                        switch (event.getType()) {
+                            case CHILD_ADDED:
+                                logger.info("Child added");
+                                break;
+
+                            case CHILD_REMOVED:
+                                try {
+                                    logger.info("Child removed");
+                                } catch (Exception e) {
+                                    logger.log(Level.SEVERE, "Error processing CHILD_REMOVED event: " + e.getMessage(), e);
+                                }
+                                break;
+
+                            case CHILD_UPDATED:
+                                try {
+                                    logger.info("Child changed");
+                                    String key = event.getData().getPath();
+                                    configChangeEvent.fire(new ZkConfigChange(key));
+                                } catch (Exception e) {
+                                    logger.log(Level.SEVERE, "Error processing CHILD_UPDATED event: " + e.getMessage(), e);
+                                }
+                                break;
+
+                            default:
+                                logger.info(event.getType().toString());
+                        }
+                    }
+                });
+            } else {
+                logger.log(Level.WARNING, "Application key: " + applicationId + " does not exist. Will not receive events.");
+            }
+        } catch (Exception e) {
+            logger.log(Level.WARNING, e.getMessage(), e);
+        }
+    }
+
+    @PreDestroy
+    public void terminate() {
+        logger.info("Terminating ZkConfigSource");
+        if(cache!=null){
+            try {
+                cache.close();
+            } catch (Exception e){
+                logger.log(Level.WARNING, "Error closing cache: " + e.getMessage(), e);
+            }
+        }
+        
+        CuratorFramework zk = getCuratorClient();
+        if(zk!=null){
+            zk.close();
+        }
     }
 
     @Override
@@ -109,7 +196,6 @@ public class ZkConfigSource implements ConfigSource {
         return null;
     }
 
-
     @Override
     public String getName() {
         return ZK_CONFIG_NAME;
@@ -130,4 +216,3 @@ public class ZkConfigSource implements ConfigSource {
     }
 
 }
-

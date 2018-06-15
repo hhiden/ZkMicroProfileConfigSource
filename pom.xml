@@ -18,6 +18,12 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>javax</groupId>
+            <version>7.0</version>
+            <artifactId>javaee-api</artifactId>
+            <scope>provided</scope>
+        </dependency>      
 
         <dependency>
             <groupId>org.apache.curator</groupId>
